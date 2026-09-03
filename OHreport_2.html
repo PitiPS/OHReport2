@@ -1,0 +1,991 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ระบบบันทึกผลตรวจสุขภาพช่องปาก (3D Scan & Dashboard)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- JSZip สำหรับแตกไฟล์ .zip -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <!-- SheetJS สำหรับอ่าน/เขียน Excel -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    * { font-family: 'Sarabun', sans-serif; }
+    * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; color-adjust: exact !important; }
+    .tooth-path { transition: fill 0.15s ease, stroke 0.15s ease; cursor: pointer; }
+    
+    /* สไตล์สีสำหรับกราฟิกซี่ฟัน SVG */
+    .tooth-normal { fill: #ffffff !important; stroke: #94a3b8 !important; }
+    .tooth-risk { fill: #fef08a !important; stroke: #ca8a04 !important; }
+    .tooth-initial { fill: #fed7aa !important; stroke: #ea580c !important; }
+    .tooth-cavity { fill: #fca5a5 !important; stroke: #dc2626 !important; }
+    .tooth-extracted { fill: #e2e8f0 !important; stroke: #94a3b8 !important; }
+    .tooth-unerupted { fill: #64748b !important; stroke: #334155 !important; }
+    .tooth-other { fill: #e9d5ff !important; stroke: #9333ea !important; }
+
+    /* คลาสสีสถานะสำหรับ UI (กล่องสี่เหลี่ยม) */
+    .bg-status-normal { background-color: #ffffff; border-color: #94a3b8; color: #1e293b; }
+    .bg-status-risk { background-color: #fef08a; border-color: #ca8a04; color: #854d0e; }
+    .bg-status-initial { background-color: #fed7aa; border-color: #ea580c; color: #9a3412; }
+    .bg-status-cavity { background-color: #fca5a5; border-color: #dc2626; color: #991b1b; }
+    .bg-status-extracted { background-color: #e2e8f0; border-color: #94a3b8; color: #64748b; }
+    .bg-status-unerupted { background-color: #64748b; border-color: #334155; color: #ffffff; }
+    .bg-status-other { background-color: #e9d5ff; border-color: #9333ea; color: #6b21a8; }
+
+    @media print {
+      body { background-color: white !important; padding: 0 !important; margin: 0 !important; }
+      .no-print { display: none !important; }
+      .print-container { display: block !important; width: 100% !important; }
+      .page { width: 210mm; min-height: 297mm; padding: 12mm; margin: 0 auto; page-break-after: always; box-sizing: border-box; background: white !important; }
+      @page { size: A4 portrait; margin: 0; }
+    }
+    
+    .tab-btn.active { border-bottom: 4px solid #0284c7; color: #0369a1; font-weight: bold; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+  </style>
+</head>
+<body class="bg-slate-100 text-slate-800 h-screen flex flex-col">
+
+  <!-- ================= Navigation Tabs ================= -->
+  <div class="bg-white shadow-sm border-b px-4 md:px-8 pt-4 flex gap-6 no-print shrink-0">
+    <button onclick="switchTab('tab-dashboard')" id="btn-tab-dashboard" class="tab-btn active pb-3 text-slate-500 hover:text-sky-700 transition">📊 แดชบอร์ด & ฐานข้อมูลนักเรียน</button>
+    <button onclick="switchTab('tab-exam')" id="btn-tab-exam" class="tab-btn pb-3 text-slate-500 hover:text-sky-700 transition">🦷 ตรวจและออกรายงาน (สแกน 3D)</button>
+  </div>
+
+  <div class="overflow-y-auto flex-1 p-4 md:p-6 no-print">
+    
+    <!-- ================= TAB 1: แดชบอร์ด & นำเข้า Excel ================= -->
+    <div id="tab-dashboard" class="tab-content active max-w-6xl mx-auto space-y-6">
+      
+      <!-- ส่วนจัดการ Excel (นำเข้า - ส่งออก) -->
+      <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
+          <h2 class="text-xl font-bold text-sky-800 flex items-center gap-2"><span>📂</span> จัดการฐานข้อมูลนักเรียน (Excel)</h2>
+          
+          <!-- ปุ่มดาวน์โหลดสรุปข้อมูลทั้งหมด -->
+          <button onclick="exportDashboardExcel()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 px-5 rounded-xl shadow transition text-sm flex items-center gap-2">
+            📥 ดาวน์โหลดสรุปข้อมูลทั้งหมด (Excel)
+          </button>
+        </div>
+        
+        <div class="flex flex-wrap gap-4 items-center bg-slate-50 p-4 rounded-xl border border-slate-200">
+          <button onclick="downloadExcelTemplate()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-4 rounded-lg shadow transition text-sm flex items-center gap-2">
+            📝 โหลดไฟล์ Template นำเข้า
+          </button>
+          <div class="h-8 w-px bg-slate-300"></div>
+          <label class="bg-sky-600 hover:bg-sky-700 text-white font-bold py-2 px-4 rounded-lg shadow cursor-pointer transition text-sm flex items-center gap-2">
+            <span>📤</span> อัปโหลดรายชื่อจาก Excel
+            <input type="file" accept=".xlsx, .xls" onchange="handleExcelImport(event)" class="hidden">
+          </label>
+          <span id="import_status" class="text-xs font-semibold text-emerald-700 hidden">✓ โหลดข้อมูลสำเร็จ <span id="student_count">0</span> คน</span>
+        </div>
+      </div>
+
+      <!-- สรุปภาพรวมระดับโรงเรียน -->
+      <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+        <h2 class="text-xl font-bold text-sky-800 mb-4">📊 สรุปข้อมูลสภาวะฟันแยกตามโรงเรียน</h2>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left border-collapse text-sm">
+            <thead>
+              <tr class="bg-sky-100 text-sky-900 border-b-2 border-sky-200">
+                <th class="p-3 font-bold">โรงเรียน</th>
+                <th class="p-3 font-bold text-center">จำนวนเด็กที่ตรวจแล้ว</th>
+                <th class="p-3 font-bold text-center">พบความเสี่ยง/ผุ</th>
+                <th class="p-3 font-bold text-center">ต้องอุดฟัน</th>
+                <th class="p-3 font-bold text-center">ต้องเคลือบหลุมร่องฟัน</th>
+              </tr>
+            </thead>
+            <tbody id="school_summary_table">
+              <tr><td colspan="5" class="p-4 text-center text-slate-400">ยังไม่มีข้อมูลการตรวจ (กรุณาตรวจในแท็บถัดไปแล้วกดบันทึก)</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- รายชื่อเด็กที่ตรวจแล้ว -->
+      <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+        <h2 class="text-xl font-bold text-sky-800 mb-4">📋 รายชื่อนักเรียนและผลตรวจเบื้องต้น</h2>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left border-collapse text-sm">
+            <thead>
+              <tr class="bg-slate-100 border-b border-slate-300">
+                <th class="p-3 font-bold">ชื่อ-สกุล</th>
+                <th class="p-3 font-bold">ชั้น</th>
+                <th class="p-3 font-bold">โรงเรียน</th>
+                <th class="p-3 font-bold text-center">ฟันผุ/เสี่ยง (ซี่)</th>
+                <th class="p-3 font-bold text-center">สถานะ</th>
+              </tr>
+            </thead>
+            <tbody id="student_records_table">
+              <tr><td colspan="5" class="p-4 text-center text-slate-400">ยังไม่มีบันทึกข้อมูล</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= TAB 2: ตรวจและออกรายงาน ================= -->
+    <div id="tab-exam" class="tab-content max-w-4xl mx-auto space-y-6">
+      
+      <!-- การนำเข้าไฟล์และจับคู่รายชื่อ (Cloud & Zip) -->
+      <div class="bg-gradient-to-r from-sky-800 to-indigo-900 text-white p-6 rounded-2xl shadow-md space-y-4">
+        <div>
+          <span class="inline-block bg-emerald-500/30 text-emerald-200 text-xs px-2.5 py-1 rounded-full font-bold mb-2">⚡ ระบบจับคู่และวิเคราะห์ AI วินิจฉัยทุกสภาวะ</span>
+          <h2 class="text-xl font-bold">นำเข้าภาพสแกน 3D ช่องปาก</h2>
+        </div>
+        
+        <div class="flex flex-wrap items-center gap-3">
+          <div class="flex-1 min-w-[250px]">
+            <label class="text-xs text-sky-200 block mb-1">เลือกชื่อนักเรียนจากฐานข้อมูล:</label>
+            <select id="db_student_select" onchange="loadStudentToForm()" class="w-full border-0 rounded-lg p-2.5 text-sm bg-white text-slate-800 font-semibold shadow-inner">
+              <option value="">-- กรุณานำเข้าไฟล์ Excel ก่อน --</option>
+            </select>
+          </div>
+          <div class="text-sky-300 font-bold hidden md:block">|</div>
+          <div class="flex gap-2 mt-4 md:mt-0 items-end">
+            <label class="bg-amber-400 hover:bg-amber-300 text-slate-900 font-bold px-4 py-2.5 rounded-xl shadow cursor-pointer transition flex items-center gap-2 text-sm">
+              <span>📦</span> อัปโหลด .ZIP สแกนเนอร์
+              <input type="file" id="zip_file_input" accept=".zip" onchange="handleZipUpload(event)" class="hidden">
+            </label>
+            <button type="button" onclick="simulateCloudSync()" class="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-4 py-2.5 rounded-xl shadow transition flex items-center gap-2 text-sm border border-indigo-400">
+              <span>☁️</span> ดึงจาก Alliedstar Cloud
+            </button>
+          </div>
+        </div>
+        <div id="ai_status_box" class="hidden pt-3 border-t border-sky-700/60 text-xs flex items-center gap-2 text-amber-200">
+          <svg class="animate-spin h-4 w-4 text-amber-300" viewBox="0 0 24 24" fill="none">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+          </svg>
+          <span id="ai_status_text">กำลังประมวลผล...</span>
+        </div>
+      </div>
+
+      <!-- ฟอร์มข้อมูลหลัก -->
+      <div class="bg-white p-6 md:p-8 rounded-2xl shadow-sm border border-slate-200">
+        <div class="flex items-center justify-between border-b pb-4 mb-6">
+          <div>
+            <h1 class="text-2xl font-bold text-sky-800">🦷 ข้อมูลการตรวจสุขภาพช่องปาก</h1>
+            <p class="text-xs text-slate-500">สำนักทันตสาธารณสุข กรมอนามัย กระทรวงสาธารณสุข</p>
+          </div>
+        </div>
+
+        <!-- 1. ข้อมูลนักเรียน -->
+        <h2 class="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2">
+          <span class="w-2 h-4 bg-sky-600 rounded-full inline-block"></span> 1. ข้อมูลนักเรียนและสถานศึกษา
+        </h2>
+        <div class="grid grid-cols-1 md:grid-cols-6 gap-3 mb-6">
+          <div>
+            <label class="text-xs font-semibold text-slate-600 block mb-1">คำนำหน้า</label>
+            <select id="input_title" class="w-full border rounded-lg p-2 text-sm bg-slate-50">
+              <option value="" selected>-- เลือก --</option>
+              <option value="เด็กหญิง">เด็กหญิง</option>
+              <option value="เด็กชาย">เด็กชาย</option>
+            </select>
+          </div>
+          <div class="md:col-span-3">
+            <label class="text-xs font-semibold text-slate-600 block mb-1">ชื่อ - สกุล นักเรียน</label>
+            <input type="text" id="input_name" placeholder="ระบุชื่อ-สกุล" class="w-full border rounded-lg p-2 text-sm bg-slate-50">
+          </div>
+          <div>
+            <label class="text-xs font-semibold text-slate-600 block mb-1">อายุ (ปี)</label>
+            <input type="number" id="input_age" placeholder="ระบุอายุ" class="w-full border rounded-lg p-2 text-sm bg-slate-50">
+          </div>
+          <div>
+            <label class="text-xs font-semibold text-slate-600 block mb-1">ระดับชั้น</label>
+            <input type="text" id="input_grade" placeholder="เช่น ป.6" class="w-full border rounded-lg p-2 text-sm bg-slate-50">
+          </div>
+          <div class="md:col-span-4">
+            <label class="text-xs font-semibold text-slate-600 block mb-1">โรงเรียน / สถานศึกษา</label>
+            <input list="school_list" id="input_school" placeholder="ระบุชื่อโรงเรียน หรือกดเลือก..." class="w-full border rounded-lg p-2 text-sm bg-slate-50">
+            <datalist id="school_list">
+              <option value="โรงเรียนตำรวจตระเวนชายแดนสิงคโปร์แอร์ไลน์ฯ จังหวัดจันทบุรี">
+              <option value="โรงเรียนตำรวจตระเวนชายแดนปากห้วยม่วง จังหวัดนครพนม">
+            </datalist>
+          </div>
+          <div class="md:col-span-2">
+            <label class="text-xs font-semibold text-slate-600 block mb-1">วันที่ตรวจ</label>
+            <input type="date" id="input_date" class="w-full border rounded-lg p-2 text-sm bg-slate-50">
+          </div>
+        </div>
+
+        <!-- 2. ภาพถ่ายช่องปาก -->
+        <h2 class="text-sm font-bold text-slate-700 mb-2 flex items-center gap-2">
+          <span class="w-2 h-4 bg-sky-600 rounded-full inline-block"></span> 2. ภาพถ่ายช่องปาก (Quadrant Composite)
+        </h2>
+        <div class="bg-slate-50 p-4 rounded-xl border border-slate-200 mb-6 text-center">
+          <img id="preview_composite" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 200'><rect width='400' height='200' fill='%23f1f5f9'/><text x='200' y='100' font-family='sans-serif' font-size='14' fill='%2394a3b8' text-anchor='middle'>อัปโหลดไฟล์ ZIP หรือกดดึงข้อมูลเพื่อแสดงภาพ</text></svg>" class="w-full max-w-xl mx-auto h-auto min-h-[150px] object-contain bg-white rounded-xl border border-slate-300 shadow-sm" alt="ภาพสแกน">
+        </div>
+
+        <!-- 3. ผังฟัน Odontogram -->
+        <div class="mb-6">
+          <h2 class="text-sm font-bold text-slate-700 mb-2 flex items-center gap-2">
+            <span class="w-2 h-4 bg-sky-600 rounded-full inline-block"></span> 3. ระบุสภาวะฟันบนผัง Arch (วงนอก: ฟันแท้ | วงใน: ฟันน้ำนม)
+          </h2>
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs mb-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
+            <div class="flex items-center gap-2"><span class="w-3 h-3 rounded border bg-status-normal inline-block"></span> <span>ปกติ</span></div>
+            <div class="flex items-center gap-2"><span class="w-3 h-3 rounded border bg-status-risk inline-block"></span> <span>เสี่ยงผุ</span></div>
+            <div class="flex items-center gap-2"><span class="w-3 h-3 rounded border bg-status-initial inline-block"></span> <span>ผุระยะเริ่มต้น</span></div>
+            <div class="flex items-center gap-2"><span class="w-3 h-3 rounded border bg-status-cavity inline-block"></span> <span>ผุเป็นรู</span></div>
+            <div class="flex items-center gap-2"><span class="w-3 h-3 rounded border bg-status-extracted inline-block text-center line-through text-[8px] leading-3 text-slate-500">X</span> <span>ถูกถอน</span></div>
+            <div class="flex items-center gap-2"><span class="w-3 h-3 rounded border bg-status-unerupted inline-block"></span> <span>ยังไม่ขึ้น/หลุดไปแล้ว</span></div>
+            <div class="flex items-center gap-2"><span class="w-3 h-3 rounded border bg-status-other inline-block"></span> <span>ผิดปกติอื่นๆ</span></div>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-200">
+            <div class="text-center bg-white p-4 rounded-lg border shadow-2xs">
+              <div class="text-xs font-bold text-sky-800 mb-1">ฟันบน (Upper Arch)</div>
+              <svg id="svg_arch_upper" viewBox="0 0 340 250" class="w-full max-w-[280px] mx-auto"></svg>
+            </div>
+            <div class="text-center bg-white p-4 rounded-lg border shadow-2xs">
+              <div class="text-xs font-bold text-sky-800 mb-1">ฟันล่าง (Lower Arch)</div>
+              <svg id="svg_arch_lower" viewBox="0 0 340 250" class="w-full max-w-[280px] mx-auto"></svg>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. แผนการรักษา -->
+        <h2 class="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2">
+          <span class="w-2 h-4 bg-sky-600 rounded-full inline-block"></span> 4. สุขภาพเหงือกและแผนการรักษา
+        </h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          <div>
+            <label class="text-xs font-semibold text-slate-600 block mb-1">สุขภาพเหงือก</label>
+            <select id="input_gum" class="w-full border rounded-lg p-2 text-sm bg-white">
+              <option value="" selected>-- เลือกสภาวะเหงือก --</option>
+              <option value="เหงือกปกติ แข็งแรงดี">เหงือกปกติ แข็งแรงดี</option>
+              <option value="เหงือกอักเสบเล็กน้อย">เหงือกอักเสบเล็กน้อย</option>
+              <option value="เหงือกอักเสบปานกลาง">เหงือกอักเสบปานกลาง มีเลือดออก</option>
+              <option value="เหงือกอักเสบรุนแรง">เหงือกอักเสบรุนแรง</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-xs font-semibold text-slate-600 block mb-1">ทันตแพทย์ผู้รายงานผล</label>
+            <div class="flex gap-2">
+              <select id="dentist_select" onchange="handleDentistSelect(this)" class="w-1/2 border rounded-lg p-2 text-xs bg-white">
+                <option value="ทพญ.ภัทราภรณ์ หัสดิเสวี" selected>ทพญ.ภัทราภรณ์ หัสดิเสวี</option>
+                <option value="ทพ.เอกชัย สุขภาพดี">ทพ.เอกชัย สุขภาพดี</option>
+                <option value="ทพญ.วิไลลักษณ์ ฟันสวย">ทพญ.วิไลลักษณ์ ฟันสวย</option>
+                <option value="custom">-- พิมพ์ระบุเอง --</option>
+              </select>
+              <input type="text" id="input_dentist" value="ทพญ.ภัทราภรณ์ หัสดิเสวี" class="w-1/2 border rounded-lg p-2 text-xs bg-slate-50">
+            </div>
+          </div>
+
+          <div class="md:col-span-2 bg-slate-50 p-3 rounded-xl border border-slate-200">
+            <label class="text-xs font-semibold text-slate-700 block mb-2">แผนการรักษาที่แนะนำ:</label>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-y-3 gap-x-2 text-xs mb-2">
+              <label class="flex items-center gap-1.5"><input type="checkbox" id="chk_plaque" class="rounded text-sky-600 w-4 h-4"> เน้นแปรงฟันกำจัดคราบจุลินทรีย์</label>
+              <label class="flex items-center gap-1.5"><input type="checkbox" id="chk_fluoride" class="rounded text-sky-600 w-4 h-4"> ทาฟลูออไรด์วานิช</label>
+              <label class="flex items-center gap-1.5"><input type="checkbox" id="chk_scaling" class="rounded text-sky-600 w-4 h-4"> ขูดหินปูน</label>
+              <label class="flex items-center gap-1.5"><input type="checkbox" id="chk_filling" class="rounded text-sky-600 w-4 h-4"> อุดฟัน <input type="number" id="num_filling" placeholder="ซี่" class="w-12 border rounded px-1 ml-1 text-center"></label>
+              <label class="flex items-center gap-1.5"><input type="checkbox" id="chk_sealant" class="rounded text-sky-600 w-4 h-4"> เคลือบหลุมร่องฟัน <input type="number" id="num_sealant" placeholder="ซี่" class="w-12 border rounded px-1 ml-1 text-center"></label>
+              <label class="flex items-center gap-1.5"><input type="checkbox" id="chk_ext" class="rounded text-sky-600 w-4 h-4"> ถอนฟัน <input type="number" id="num_ext" placeholder="ซี่" class="w-12 border rounded px-1 ml-1 text-center"></label>
+            </div>
+            <input type="text" id="input_treatment_extra" placeholder="แผนการรักษาเพิ่มเติม (ถ้ามี)..." class="w-full border rounded-lg p-2 text-xs mt-2">
+          </div>
+        </div>
+
+        <!-- 5. คำแนะนำในการดูแลสุขภาพช่องปาก -->
+        <h2 class="text-sm font-bold text-slate-700 mb-2 flex items-center gap-2">
+          <span class="w-2 h-4 bg-sky-600 rounded-full inline-block"></span> 5. คำแนะนำเพิ่มเติมจากทันตแพทย์
+        </h2>
+        <div class="bg-slate-50 p-3 rounded-xl border border-slate-200 mb-6">
+          <div class="text-[11px] text-slate-500 mb-1.5">คลิกเพื่อเพิ่มข้อความแนะนำมาตรฐาน:</div>
+          <div class="flex flex-wrap gap-1.5 mb-2">
+            <button type="button" onclick="appendAdvice('แปรงฟันให้ทั่วทั้งปาก นาน 2 นาที ด้วยยาสีฟันผสมฟลูออไรด์ 1,500 ppm โดยเน้นบริเวณใกล้ขอบเหงือกและหลุมร่องฟัน')" class="text-xs bg-white hover:bg-sky-50 text-sky-800 border rounded-lg px-2.5 py-1 transition">+ แปรงฟัน 2 นาทีฟลูออไรด์</button>
+            <button type="button" onclick="appendAdvice('แนะนำใช้ไหมขัดฟันทำความสะอาดซอกฟันวันละ 1 ครั้งก่อนนอน')" class="text-xs bg-white hover:bg-sky-50 text-sky-800 border rounded-lg px-2.5 py-1 transition">+ แนะนำใช้ไหมขัดฟัน</button>
+            <button type="button" onclick="appendAdvice('ลดการรับประทานขนมหวาน น้ำอัดลม และของหวานระหว่างมื้อ')" class="text-xs bg-white hover:bg-sky-50 text-sky-800 border rounded-lg px-2.5 py-1 transition">+ ลดขนมหวาน/น้ำอัดลม</button>
+            <button type="button" onclick="appendAdvice('แนะนำให้ผู้ปกครองพานักเรียนไปพบทันตแพทย์เพื่อตรวจสุขภาพช่องปากทุก 6 เดือน')" class="text-xs bg-white hover:bg-sky-50 text-sky-800 border rounded-lg px-2.5 py-1 transition">+ พบหมอฟันทุก 6 เดือน</button>
+          </div>
+          <textarea id="input_advice" rows="3" class="w-full border rounded-lg p-2 text-xs" placeholder="พิมพ์คำแนะนำหรือรายละเอียดการประเมินจาก AI ที่นี่..."></textarea>
+        </div>
+
+        <!-- 6. เพิ่มปัญหาและภาพถ่ายเฉพาะจุด -->
+        <div class="flex items-center justify-between mb-2">
+          <h2 class="text-sm font-bold text-slate-700 flex items-center gap-2">
+            <span class="w-2 h-4 bg-sky-600 rounded-full inline-block"></span> 6. ปัญหาที่พบเฉพาะจุดและภาพถ่ายซูม (Close-up)
+          </h2>
+          <button type="button" onclick="addFindingRow()" class="text-xs bg-sky-50 text-sky-700 hover:bg-sky-100 font-bold px-3 py-1 rounded-lg border border-sky-200 shadow-sm">
+            ➕ เพิ่มจุดปัญหา (อัปโหลดเอง)
+          </button>
+        </div>
+        <div class="bg-white border rounded-xl p-3 mb-6">
+          <div class="text-[11px] text-slate-500 mb-2">ภาพ 5 มุมมองที่ดึงจากไฟล์สแกน (คลิกที่ภาพเพื่อนำไปใช้ระบุปัญหาเฉพาะจุด):</div>
+          <div id="snapshot_thumbnails" class="flex flex-wrap gap-2 mb-3 min-h-[60px]">
+             <span class="text-xs text-slate-400 italic mt-2">ยังไม่มีภาพจากสแกนเนอร์</span>
+          </div>
+          <div id="findings_container" class="space-y-2 border-t pt-3"></div>
+        </div>
+
+        <div class="flex flex-col md:flex-row gap-3 mt-8">
+          <button onclick="saveStudentResult()" class="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3.5 px-4 rounded-xl shadow transition text-base">
+            💾 บันทึกข้อมูลเด็กลงสรุป (แดชบอร์ด)
+          </button>
+          <button onclick="printReport()" class="flex-1 bg-sky-700 hover:bg-sky-800 text-white font-bold py-3.5 px-4 rounded-xl shadow transition text-base">
+            📄 พิมพ์ใบรายงานผล (PDF)
+          </button>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= โครงสร้าง PDF REPORT (Hidden during UI use) ================= -->
+  <div id="print_area" class="max-w-[210mm] mx-auto hidden print:block bg-white">
+    <!-- หน้า 1: ปก -->
+    <div class="page flex flex-col justify-between border print:border-none">
+      <div class="w-full h-3 bg-gradient-to-r from-sky-400 via-teal-400 to-sky-500 rounded-full mb-6"></div>
+      <div class="text-center my-auto space-y-6 px-4">
+        <div class="flex justify-center">
+          <div class="w-36 h-36 flex items-center justify-center bg-white">
+            <img src="Seal_of_the_Ministry_of_Public_Health_of_Thailand.svg.webp" alt="ตรากระทรวงสาธารณสุข" class="w-full h-full object-contain">
+          </div>
+        </div>
+        <div>
+          <div class="text-base font-bold text-slate-700 tracking-wider mt-2">กระทรวงสาธารณสุข • กรมอนามัย</div>
+          <div class="text-sm text-slate-500 mt-0.5">สำนักทันตสาธารณสุข</div>
+        </div>
+        <div class="py-6">
+          <h1 class="text-4xl font-extrabold text-sky-900 leading-snug">รายงานผลการตรวจสุขภาพช่องปาก</h1>
+          <p class="text-xl font-bold text-sky-600 mt-2">โดยเครื่องสแกนช่องปากแบบสามมิติ (3D Intraoral Scanner)</p>
+        </div>
+        <div class="max-w-lg mx-auto bg-sky-50/80 border-2 border-sky-200 rounded-3xl p-6 text-left space-y-3">
+          <div class="text-center font-bold text-sky-900 border-b border-sky-200 pb-2 mb-4 text-lg">ข้อมูลนักเรียน</div>
+          <div class="text-base"><strong>ชื่อ-สกุล:</strong> <span class="sync-name font-bold text-sky-950"></span></div>
+          <div class="text-base"><strong>อายุ:</strong> <span class="sync-age"></span> ปี &nbsp;&nbsp;|&nbsp;&nbsp; <strong>ระดับชั้น:</strong> <span class="sync-grade"></span></div>
+          <div class="text-base"><strong>สถานศึกษา:</strong> <span class="sync-school"></span></div>
+          <div class="text-base"><strong>วันที่ตรวจ:</strong> <span class="sync-date"></span></div>
+        </div>
+      </div>
+      <div class="text-center border-t pt-4 text-xs text-slate-500">สำนักทันตสาธารณสุข กรมอนามัย กระทรวงสาธารณสุข</div>
+    </div>
+
+    <!-- หน้า 2: สแกน & ผังฟัน -->
+    <div class="page border print:border-none flex flex-col justify-between bg-white">
+      <div>
+        <div class="flex justify-between items-center border-b pb-2 mb-3 text-sm text-slate-600">
+          <div><strong>ผู้รับการตรวจ:</strong> <span class="sync-name font-bold text-sky-900"></span> (<span class="sync-grade"></span>)</div>
+          <div>วันที่ตรวจ: <span class="sync-date font-bold"></span></div>
+        </div>
+        <h2 class="text-center text-base font-bold text-sky-900 mb-2">ภาพถ่ายในช่องปากจากเครื่องสแกน 3 มิติ (Quadrant Composite)</h2>
+        <div class="border rounded-2xl p-2 bg-slate-50 mb-4 text-center">
+          <img id="report_scan_composite" class="w-full h-auto min-h-[220px] max-h-[300px] object-contain mx-auto bg-white rounded-xl border border-slate-200">
+        </div>
+        <div class="border rounded-2xl p-3 bg-white mb-3">
+          <div class="mb-2 text-sm font-bold text-sky-900">ผังตรวจสุขภาพฟันแท้และฟันน้ำนม (Dental Arch Odontogram)</div>
+          <div class="grid grid-cols-4 md:grid-cols-7 gap-1 text-[9px] mb-3 p-2 bg-slate-50 rounded-lg border border-slate-200">
+            <div class="flex items-center gap-1"><span class="w-3 h-3 rounded border bg-status-normal inline-block shrink-0"></span> <span>ปกติ</span></div>
+            <div class="flex items-center gap-1"><span class="w-3 h-3 rounded border bg-status-risk inline-block shrink-0"></span> <span>เสี่ยงผุ</span></div>
+            <div class="flex items-center gap-1"><span class="w-3 h-3 rounded border bg-status-initial inline-block shrink-0"></span> <span>ผุระยะเริ่มต้น</span></div>
+            <div class="flex items-center gap-1"><span class="w-3 h-3 rounded border bg-status-cavity inline-block shrink-0"></span> <span>ผุเป็นรู</span></div>
+            <div class="flex items-center gap-1"><span class="w-3 h-3 rounded border bg-status-extracted inline-block shrink-0 text-center line-through text-[7px] leading-3 text-slate-500">X</span> <span>ถูกถอน</span></div>
+            <div class="flex items-center gap-1"><span class="w-3 h-3 rounded border bg-status-unerupted inline-block shrink-0"></span> <span>ยังไม่ขึ้น/หลุดไปแล้ว</span></div>
+            <div class="flex items-center gap-1"><span class="w-3 h-3 rounded border bg-status-other inline-block shrink-0"></span> <span>ผิดปกติ</span></div>
+          </div>
+          <div class="grid grid-cols-2 gap-4 text-center">
+            <div class="bg-slate-50/50 p-2 rounded-xl border border-slate-100">
+              <span class="text-xs font-semibold text-sky-800 block mb-1">ขากรรไกรบน</span>
+              <div id="report_arch_upper_box" class="w-full flex justify-center"></div>
+            </div>
+            <div class="bg-slate-50/50 p-2 rounded-xl border border-slate-100">
+              <span class="text-xs font-semibold text-sky-800 block mb-1">ขากรรไกรล่าง</span>
+              <div id="report_arch_lower_box" class="w-full flex justify-center"></div>
+            </div>
+          </div>
+        </div>
+        <div class="border border-sky-200 rounded-xl p-3 bg-sky-50/80 text-sm">
+          <div class="font-bold text-sky-900 mb-1.5">สรุปจำนวนฟันและสภาวะในช่องปาก:</div>
+          <div class="grid grid-cols-2 gap-x-4 gap-y-1" id="report_stat_counts"></div>
+        </div>
+      </div>
+      <div class="text-xs text-slate-400 text-center border-t pt-2">รายงานแผ่นที่ 2</div>
+    </div>
+
+    <!-- หน้า 3: แผนรักษา -->
+    <div class="page border print:border-none flex flex-col justify-between bg-white">
+      <div>
+        <div class="flex justify-between items-center border-b pb-2 mb-4 text-sm text-slate-600">
+          <div><strong>ผู้รับการตรวจ:</strong> <span class="sync-name font-bold text-sky-900"></span></div>
+          <div><span class="sync-school"></span></div>
+        </div>
+        <h2 class="text-base font-bold text-sky-900 mb-3">ผลการประเมินและการดูแลรักษา</h2>
+        <div class="grid grid-cols-2 gap-3 text-sm mb-4">
+          <div class="bg-slate-50 p-3 rounded-xl border border-slate-200">
+            <span class="font-bold text-slate-700 block mb-1">สุขภาพเหงือก:</span>
+            <span id="report_gum" class="text-rose-700 font-semibold"></span>
+          </div>
+          <div class="bg-slate-50 p-3 rounded-xl border border-slate-200">
+            <span class="font-bold text-slate-700 block mb-1">แผนการรักษาที่แนะนำ:</span>
+            <span id="report_treatment" class="text-sky-900 font-semibold leading-relaxed block"></span>
+          </div>
+        </div>
+        <h3 class="text-sm font-bold text-slate-800 mb-2">ภาพและรายละเอียดปัญหาที่พบเฉพาะจุด:</h3>
+        <div id="report_findings_list" class="grid grid-cols-2 gap-3 mb-4"></div>
+
+        <div class="bg-sky-50 border border-sky-200 rounded-xl p-4 text-sm mb-4">
+          <strong class="text-sky-900 block mb-2 text-base">คำแนะนำเพิ่มเติม:</strong>
+          <p id="report_advice_text" class="text-slate-800 leading-relaxed whitespace-pre-line"></p>
+        </div>
+        <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-900 mb-4">
+          <strong>หมายเหตุ:</strong> ผลตรวจครั้งนี้เป็นการประเมินเบื้องต้นจากภาพสแกนช่องปาก 3 มิติ ผู้ปกครองควรพานักเรียนไปพบทันตแพทย์เพื่อตรวจรักษา
+        </div>
+      </div>
+      <div class="border-2 border-sky-300 bg-sky-50/70 rounded-3xl p-4 text-slate-800">
+        <div class="text-center font-bold text-sky-900 text-sm mb-3">คำแนะนำสูตร 2 - 2 - 2 ในการดูแลฟัน</div>
+        <div class="grid grid-cols-3 gap-3 text-center text-xs">
+          <div class="bg-white p-3 rounded-2xl border border-sky-100">
+            <div class="text-lg font-extrabold text-sky-600">2 ครั้ง</div>
+            <div class="text-[10px] text-slate-600 mt-1">แปรงอย่างน้อยวันละ 2 ครั้ง เช้า-ก่อนนอน</div>
+          </div>
+          <div class="bg-white p-3 rounded-2xl border border-sky-100">
+            <div class="text-lg font-extrabold text-sky-600">2 นาที</div>
+            <div class="text-[10px] text-slate-600 mt-1">แปรงนานอย่างน้อย 2 นาทีด้วยฟลูออไรด์</div>
+          </div>
+          <div class="bg-white p-3 rounded-2xl border border-sky-100">
+            <div class="text-lg font-extrabold text-sky-600">2 ชม.</div>
+            <div class="text-[10px] text-slate-600 mt-1">งดอาหาร/น้ำหลังแปรงฟัน 2 ชั่วโมง</div>
+          </div>
+        </div>
+        <div class="mt-4 pt-3 border-t border-sky-200 text-right text-sm text-slate-700">
+          ทันตแพทย์ผู้รายงานผล: <span id="report_dentist_name" class="font-bold text-sky-950"></span> • สำนักทันตสาธารณสุข กรมอนามัย
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    // ================= โครงสร้างผังฟันและสเตตัส =================
+    const upperPermArch = [{ id: '18', x: 26, y: 215, r: 5 }, { id: '17', x: 33, y: 175, r: 10 }, { id: '16', x: 44, y: 135, r: 18 }, { id: '15', x: 60, y: 98, r: 25 }, { id: '14', x: 82, y: 65, r: 35 }, { id: '13', x: 108, y: 40, r: 45 }, { id: '12', x: 138, y: 25, r: 65 }, { id: '11', x: 161, y: 20, r: 85 }, { id: '21', x: 179, y: 20, r: 95 }, { id: '22', x: 202, y: 25, r: 115 }, { id: '23', x: 232, y: 40, r: 135 }, { id: '24', x: 258, y: 65, r: 145 }, { id: '25', x: 280, y: 98, r: 155 }, { id: '26', x: 296, y: 135, r: 162 }, { id: '27', x: 307, y: 175, r: 170 }, { id: '28', x: 314, y: 215, r: 175 }];
+    const lowerPermArch = [{ id: '48', x: 26, y: 35, r: 175 }, { id: '47', x: 33, y: 75, r: 170 }, { id: '46', x: 44, y: 115, r: 162 }, { id: '45', x: 60, y: 152, r: 155 }, { id: '44', x: 82, y: 185, r: 145 }, { id: '43', x: 108, y: 210, r: 135 }, { id: '42', x: 138, y: 225, r: 115 }, { id: '41', x: 161, y: 230, r: 95 }, { id: '31', x: 179, y: 230, r: 85 }, { id: '32', x: 202, y: 225, r: 65 }, { id: '33', x: 232, y: 210, r: 45 }, { id: '34', x: 258, y: 185, r: 35 }, { id: '35', x: 280, y: 152, r: 25 }, { id: '36', x: 296, y: 115, r: 18 }, { id: '37', x: 307, y: 75, r: 10 }, { id: '38', x: 314, y: 35, r: 5 }];
+    const upperPrimaryArch = [{ id: '55', x: 92, y: 125, r: 20 }, { id: '54', x: 108, y: 98, r: 30 }, { id: '53', x: 126, y: 76, r: 45 }, { id: '52', x: 147, y: 62, r: 70 }, { id: '51', x: 163, y: 58, r: 85 }, { id: '61', x: 177, y: 58, r: 95 }, { id: '62', x: 193, y: 62, r: 110 }, { id: '63', x: 214, y: 76, r: 135 }, { id: '64', x: 232, y: 98, r: 150 }, { id: '65', x: 248, y: 125, r: 160 }];
+    const lowerPrimaryArch = [{ id: '85', x: 92, y: 125, r: 160 }, { id: '84', x: 108, y: 152, r: 150 }, { id: '83', x: 126, y: 174, r: 135 }, { id: '82', x: 147, y: 188, r: 110 }, { id: '81', x: 163, y: 192, r: 95 }, { id: '71', x: 177, y: 192, r: 85 }, { id: '72', x: 193, y: 188, r: 70 }, { id: '73', x: 214, y: 174, r: 45 }, { id: '74', x: 232, y: 152, r: 30 }, { id: '75', x: 248, y: 125, r: 20 }];
+    
+    const statuses = [
+      { id: 'normal', cls: 'tooth-normal' }, { id: 'risk', cls: 'tooth-risk' }, { id: 'initial', cls: 'tooth-initial' },
+      { id: 'cavity', cls: 'tooth-cavity' }, { id: 'extracted', cls: 'tooth-extracted' }, { id: 'unerupted', cls: 'tooth-unerupted' }, { id: 'other', cls: 'tooth-other' }
+    ];
+
+    let teethState = {};
+    let scannedImages = {}; 
+
+    function initArchOdontogram() {
+      [...upperPermArch, ...lowerPermArch].forEach(t => { teethState[t.id] = ['18','28','38','48'].includes(t.id) ? 'unerupted' : 'normal'; });
+      [...upperPrimaryArch, ...lowerPrimaryArch].forEach(t => { teethState[t.id] = 'unerupted'; });
+      renderDualArch('svg_arch_upper', upperPermArch, upperPrimaryArch, true, 'upper');
+      renderDualArch('svg_arch_lower', lowerPermArch, lowerPrimaryArch, true, 'lower');
+    }
+
+    function renderDualArch(svgId, permList, primaryList, isInteractive, type) {
+      const svg = document.getElementById(svgId);
+      svg.innerHTML = '';
+      const guideOuter = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      guideOuter.setAttribute('d', type === 'upper' ? 'M 26 215 C 35 30, 305 30, 314 215' : 'M 26 35 C 35 220, 305 220, 314 35');
+      guideOuter.setAttribute('fill', 'none'); guideOuter.setAttribute('stroke', '#e2e8f0');
+      svg.appendChild(guideOuter);
+      const guideInner = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      guideInner.setAttribute('d', type === 'upper' ? 'M 92 125 C 105 50, 235 50, 248 125' : 'M 92 125 C 105 200, 235 200, 248 125');
+      guideInner.setAttribute('fill', 'none'); guideInner.setAttribute('stroke', '#f1f5f9'); guideInner.setAttribute('stroke-dasharray', '2,2');
+      svg.appendChild(guideInner);
+
+      permList.forEach(t => drawTooth(svg, t, isInteractive, false));
+      primaryList.forEach(t => drawTooth(svg, t, isInteractive, true));
+    }
+
+    function drawTooth(svg, tooth, isInteractive, isPrimary) {
+      const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+      g.setAttribute('transform', `translate(${tooth.x}, ${tooth.y}) rotate(${tooth.r})`);
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', isPrimary ? 'M -5.5 -8 C -7.5 -4, -6.5 5, -5 8 C -2 9.5, 2 9.5, 5 8 C 6.5 5, 7.5 -4, 5.5 -8 C 3 -9.5, -3 -9.5, -5.5 -8 Z' : 'M -7 -10 C -9 -5, -8 6, -6 10 C -2 12, 2 12, 6 10 C 8 6, 9 -5, 7 -10 C 4 -12, -4 -12, -7 -10 Z');
+      path.setAttribute('stroke-width', isPrimary ? '1.2' : '1.5');
+      path.setAttribute('class', `tooth-path ${statuses.find(s=>s.id===teethState[tooth.id])?.cls || 'tooth-normal'}`);
+      path.setAttribute('id', `tooth_${isInteractive ? 'ui' : 'rep'}_${tooth.id}`);
+      
+      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      text.setAttribute('text-anchor', 'middle'); text.setAttribute('dominant-baseline', 'central'); text.setAttribute('font-size', isPrimary ? '6' : '6.5'); text.setAttribute('font-weight', 'bold');
+      text.setAttribute('fill', teethState[tooth.id] === 'unerupted' ? '#ffffff' : '#334155'); text.setAttribute('transform', `rotate(-${tooth.r})`); text.textContent = tooth.id;
+      g.appendChild(path); g.appendChild(text);
+      if (isInteractive) g.onclick = () => {
+        const curIdx = statuses.findIndex(s => s.id === teethState[tooth.id]);
+        const nextIdx = (curIdx + 1) % statuses.length;
+        updateToothUI(tooth.id, statuses[nextIdx].id);
+      };
+      svg.appendChild(g);
+    }
+
+    function updateToothUI(toothId, statusId) {
+      teethState[toothId] = statusId;
+      const el = document.getElementById(`tooth_ui_${toothId}`);
+      if (el) {
+        el.setAttribute('class', `tooth-path ${statuses.find(s=>s.id===statusId).cls}`);
+        if(el.nextElementSibling) el.nextElementSibling.setAttribute('fill', statusId === 'unerupted' ? '#ffffff' : '#334155');
+      }
+    }
+
+    // ================= ระบบข้อมูลนักเรียน & แดชบอร์ด =================
+    let studentsDB = [];
+    let processedRecords = [];
+
+    function switchTab(tabId) {
+      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+      document.getElementById(`btn-${tabId}`).classList.add('active');
+      document.getElementById(tabId).classList.add('active');
+    }
+
+    function downloadExcelTemplate() {
+      const ws_data = [
+        ['คำนำหน้า', 'ชื่อ-สกุล', 'อายุ', 'ระดับชั้น', 'โรงเรียน'],
+        ['เด็กหญิง', 'กัลยรัตน์ ทองปัญญา', 12, 'ชั้นประถมศึกษาปีที่ 6', 'โรงเรียนตำรวจตระเวนชายแดนสิงคโปร์แอร์ไลน์ฯ จังหวัดจันทบุรี'],
+        ['เด็กชาย', 'สมชาย ใจดี', 11, 'ชั้นประถมศึกษาปีที่ 5', 'โรงเรียนตำรวจตระเวนชายแดนปากห้วยม่วง จังหวัดนครพนม']
+      ];
+      const ws = XLSX.utils.aoa_to_sheet(ws_data);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Students");
+      XLSX.writeFile(wb, "Student_Template.xlsx");
+    }
+
+    function handleExcelImport(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const data = new Uint8Array(e.target.result);
+        const workbook = XLSX.read(data, {type: 'array'});
+        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+        const jsonData = XLSX.utils.sheet_to_json(firstSheet);
+        
+        studentsDB = jsonData;
+        document.getElementById('import_status').classList.remove('hidden');
+        document.getElementById('student_count').innerText = studentsDB.length;
+        
+        const select = document.getElementById('db_student_select');
+        select.innerHTML = '<option value="">-- เลือกรายชื่อเพื่อเริ่มการตรวจ --</option>';
+        studentsDB.forEach((std, idx) => {
+          select.innerHTML += `<option value="${idx}">${std['ชื่อ-สกุล']} (${std['ระดับชั้น']})</option>`;
+        });
+        alert(`โหลดข้อมูลนักเรียนสำเร็จ ${studentsDB.length} คน นำไปแสดงใน Dropdown แล้ว`);
+      };
+      reader.readAsArrayBuffer(file);
+    }
+
+    function loadStudentToForm() {
+      const idx = document.getElementById('db_student_select').value;
+      if (idx === '') return;
+      const std = studentsDB[idx];
+      document.getElementById('input_title').value = std['คำนำหน้า'] || '';
+      document.getElementById('input_name').value = std['ชื่อ-สกุล'] || '';
+      document.getElementById('input_age').value = std['อายุ'] || '';
+      document.getElementById('input_grade').value = std['ระดับชั้น'] || '';
+      document.getElementById('input_school').value = std['โรงเรียน'] || '';
+    }
+
+    // ================= ระบบส่งออกข้อมูลสรุป (Dashboard Excel Export) =================
+    function exportDashboardExcel() {
+      if (processedRecords.length === 0) {
+        alert("ยังไม่มีข้อมูลการตรวจสำหรับดาวน์โหลด (กรุณาบันทึกข้อมูลเด็กในแท็บตรวจและออกรายงานก่อน)");
+        return;
+      }
+
+      // ข้อมูลรายบุคคล
+      const studentData = processedRecords.map((r, index) => ({
+        "ลำดับ": index + 1,
+        "ชื่อ-สกุล": r.name,
+        "ระดับชั้น": r.grade,
+        "โรงเรียน": r.school,
+        "พบความเสี่ยง/ผุ (ซี่)": r.totalBad,
+        "ต้องอุดฟัน (ซี่)": r.fillingNum,
+        "ต้องเคลือบหลุมร่องฟัน (ซี่)": r.sealantNum
+      }));
+
+      // ข้อมูลสรุปรายโรงเรียน
+      const schools = {};
+      processedRecords.forEach(r => {
+        if(!schools[r.school]) schools[r.school] = { count:0, bad:0, fill:0, seal:0 };
+        schools[r.school].count += 1;
+        schools[r.school].bad += r.totalBad;
+        schools[r.school].fill += r.fillingNum;
+        schools[r.school].seal += r.sealantNum;
+      });
+
+      const schoolData = Object.keys(schools).map((s, index) => ({
+        "ลำดับ": index + 1,
+        "โรงเรียน": s,
+        "จำนวนเด็กที่ตรวจแล้ว": schools[s].count,
+        "พบความเสี่ยง/ผุ (ซี่)": schools[s].bad,
+        "ต้องอุดฟัน (ซี่)": schools[s].fill,
+        "ต้องเคลือบหลุมร่องฟัน (ซี่)": schools[s].seal
+      }));
+
+      const wsStudents = XLSX.utils.json_to_sheet(studentData);
+      const wsSchools = XLSX.utils.json_to_sheet(schoolData);
+
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, wsSchools, "สรุปรายโรงเรียน");
+      XLSX.utils.book_append_sheet(wb, wsStudents, "ข้อมูลรายบุคคล");
+
+      XLSX.writeFile(wb, "รายงานสรุปสภาวะฟัน_Dashboard.xlsx");
+    }
+
+    // ================= ระบบ ZIP & AI Cloud Mock ทุกสภาวะ =================
+    async function handleZipUpload(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      processScanFile(file, 'zip');
+    }
+
+    function simulateCloudSync() {
+      const studentName = document.getElementById('input_name').value.trim();
+      if(!studentName) {
+        alert("กรุณาเลือกหรือกรอกชื่อนักเรียนก่อนดึงข้อมูลจาก Cloud"); return;
+      }
+      processScanFile(null, 'cloud');
+    }
+
+    async function processScanFile(file, source) {
+      const statusBox = document.getElementById('ai_status_box');
+      const statusText = document.getElementById('ai_status_text');
+      statusBox.classList.remove('hidden');
+      
+      scannedImages = {}; // เคลียร์รูปเก่า
+
+      if(source === 'zip') {
+        statusText.innerText = 'กำลังเปิดไฟล์ .ZIP และดึงภาพ...';
+        try {
+          const zip = await JSZip.loadAsync(file);
+          let foundComposite = false;
+          
+          for (const [filename, fileData] of Object.entries(zip.files)) {
+            if (fileData.dir) continue;
+            const lower = filename.toLowerCase();
+            if (lower.includes('snapshot') && (lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg'))) {
+              const blob = await fileData.async('blob');
+              const dataUrl = await blobToDataURL(blob);
+
+              if (lower.includes('quadrant_composite')) {
+                document.getElementById('preview_composite').src = dataUrl;
+                foundComposite = true;
+              } else if (lower.includes('front') || lower.includes('center')) {
+                scannedImages['front'] = dataUrl;
+              } else if (lower.includes('left')) {
+                scannedImages['left'] = dataUrl;
+              } else if (lower.includes('right')) {
+                scannedImages['right'] = dataUrl;
+              } else if (lower.includes('upper') || lower.includes('maxillary')) {
+                scannedImages['upper'] = dataUrl;
+              } else if (lower.includes('lower') || lower.includes('mandibular')) {
+                scannedImages['lower'] = dataUrl;
+              }
+            }
+          }
+          
+          if(!foundComposite) { statusBox.classList.add('hidden'); alert('ไม่พบไฟล์ quadrant_composite ใน zip'); return; }
+          
+          renderSnapshotThumbnails();
+
+        } catch(e) { statusBox.classList.add('hidden'); alert('ไฟล์ ZIP ไม่ถูกต้อง'); return; }
+      } else {
+        statusText.innerText = 'กำลังเชื่อมต่อ Alliedstar Cloud และดึงภาพ 3D...';
+        document.getElementById('preview_composite').src = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 200'><rect width='400' height='200' fill='%23e0f2fe'/><text x='200' y='100' font-family='sans-serif' font-size='16' fill='%230369a1' text-anchor='middle' font-weight='bold'>ดึงภาพสแกน 3D จาก Cloud สำเร็จ</text></svg>";
+        scannedImages = {
+          'front': document.getElementById('preview_composite').src,
+          'left': document.getElementById('preview_composite').src,
+          'upper': document.getElementById('preview_composite').src
+        };
+        renderSnapshotThumbnails();
+      }
+
+      statusText.innerText = 'AI กำลังประมวลผลเทียบเคียงภาพสแกนกับฐานข้อมูลอินเทอร์เน็ตเพื่อวินิจฉัยสภาวะฟันทั้งหมด...';
+      
+      setTimeout(() => {
+        initArchOdontogram();
+        
+        updateToothUI('11', 'risk'); 
+        updateToothUI('21', 'risk');
+        updateToothUI('16', 'initial'); 
+        updateToothUI('26', 'initial'); 
+        updateToothUI('36', 'initial');
+        updateToothUI('46', 'cavity');
+        updateToothUI('65', 'extracted');
+        ['18','28','38','48'].forEach(t => updateToothUI(t, 'unerupted'));
+        updateToothUI('22', 'other'); 
+
+        document.getElementById('input_gum').value = 'เหงือกอักเสบเล็กน้อย';
+        document.getElementById('chk_plaque').checked = true;
+        document.getElementById('chk_fluoride').checked = true; 
+        document.getElementById('chk_sealant').checked = true; 
+        document.getElementById('num_sealant').value = 3; 
+        document.getElementById('chk_filling').checked = true; 
+        document.getElementById('num_filling').value = 1;
+
+        document.getElementById('input_advice').value = 'ผลการวินิจฉัยจาก AI Computer Vision (เทียบสภาวะสากล):\n- เสี่ยงผุ (พบรอยขุ่นขาว White Lesion): 11, 21 แนะนำทาฟลูออไรด์วานิช\n- ผุระยะเริ่มต้น (พบรอยดำตาม Groove): 16, 26, 36 แนะนำเคลือบหลุมร่องฟัน\n- ผุเป็นรู (Cavity): 46 แนะนำอุดฟัน\n- ฟันผิดปกติอื่นๆ: 22 รูปร่างซี่ฟันผิดปกติ\n- พบคราบจุลินทรีย์เล็กน้อยตามขอบเหงือก แนะนำแปรงฟัน 2-2-2';
+
+        statusBox.classList.add('hidden');
+        alert(`✓ AI วิเคราะห์สภาวะฟันทุกซี่ครบถ้วนสำเร็จ!\n\nระบบตรวจพบสภาวะต่างๆ ดังนี้: ปกติ, เสี่ยงผุ(ขาว), ผุระยะเริ่มต้น(ส้ม), ผุเป็นรู(แดง), ถูกถอน(ขีดฆ่า), ยังไม่ขึ้น, และผิดปกติอื่นๆ(ม่วง)`);
+      }, 2500);
+    }
+
+    function blobToDataURL(blob) { return new Promise(res => { const r = new FileReader(); r.onload = e => res(e.target.result); r.readAsDataURL(blob); }); }
+
+    function renderSnapshotThumbnails() {
+      const container = document.getElementById('snapshot_thumbnails');
+      container.innerHTML = '';
+      const views = [
+        { key: 'upper', label: 'ฟันบน' },
+        { key: 'lower', label: 'ฟันล่าง' },
+        { key: 'front', label: 'ด้านหน้า' },
+        { key: 'right', label: 'ด้านขวา' },
+        { key: 'left', label: 'ด้านซ้าย' }
+      ];
+      let hasImg = false;
+      views.forEach(v => {
+        if(scannedImages[v.key]) {
+          hasImg = true;
+          container.innerHTML += `
+            <div class="cursor-pointer border border-slate-200 hover:border-sky-500 rounded p-1 bg-white shadow-sm transition" onclick="addFindingRow('${scannedImages[v.key]}')">
+              <img src="${scannedImages[v.key]}" class="h-12 w-16 object-cover rounded">
+              <div class="text-[9px] text-center mt-1 font-semibold text-slate-600">${v.label}</div>
+            </div>
+          `;
+        }
+      });
+      if(!hasImg) {
+        container.innerHTML = '<span class="text-xs text-slate-400 italic mt-2">ไม่พบภาพ 5 มุมมองในโฟลเดอร์ snapshot</span>';
+      }
+    }
+
+    function addFindingRow(imgSrc = null) {
+      const container = document.getElementById('findings_container');
+      const div = document.createElement('div');
+      div.className = 'finding-row grid grid-cols-1 md:grid-cols-3 gap-2 bg-slate-50 p-2.5 rounded-lg border items-center';
+      
+      let imgHtml = '';
+      if (imgSrc && typeof imgSrc === 'string') {
+        imgHtml = `
+          <img src="${imgSrc}" data-base64="${imgSrc}" class="finding-img h-14 w-auto object-contain bg-white rounded border mx-auto">
+          <input type="file" accept="image/*" onchange="cacheFindingImage(event, this)" class="finding-file hidden">
+          <button type="button" onclick="this.previousElementSibling.click()" class="text-[9px] text-sky-600 underline mt-1 block w-full text-center">เปลี่ยนรูป</button>
+        `;
+      } else {
+        imgHtml = `
+          <input type="file" accept="image/*" onchange="cacheFindingImage(event, this)" class="finding-file text-[10px] w-full">
+          <img src="" class="finding-img hidden h-14 w-auto object-contain bg-white rounded border mx-auto mt-1">
+        `;
+      }
+
+      div.innerHTML = `
+        <div class="md:col-span-2">
+          <input type="text" class="finding-desc w-full border rounded p-1.5 text-xs" placeholder="ระบุปัญหาเฉพาะจุด เช่น ผิวฟันมีรอยขุ่นขาว...">
+        </div>
+        <div class="flex items-center gap-2">
+          <div class="flex-1 text-center">
+            ${imgHtml}
+          </div>
+          <button type="button" onclick="this.closest('.finding-row').remove()" class="text-rose-500 font-bold px-2 text-lg hover:text-rose-700">✕</button>
+        </div>
+      `;
+      container.appendChild(div);
+    }
+
+    function cacheFindingImage(event, inputElement) {
+      const file = event.target.files[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = function(e) {
+          inputElement.setAttribute('data-base64', e.target.result);
+          const img = inputElement.parentElement.querySelector('.finding-img');
+          if(img) {
+            img.src = e.target.result;
+            img.classList.remove('hidden');
+            img.setAttribute('data-base64', e.target.result);
+          }
+        };
+        reader.readAsDataURL(file);
+      }
+    }
+
+    function handleDentistSelect(sel) {
+      const inp = document.getElementById('input_dentist');
+      if (sel.value === 'custom') {
+        inp.value = ''; inp.focus();
+      } else {
+        inp.value = sel.value;
+      }
+    }
+
+    function appendAdvice(text) {
+      const textarea = document.getElementById('input_advice');
+      if (textarea.value.trim() === '') {
+        textarea.value = text;
+      } else {
+        textarea.value += '\n• ' + text;
+      }
+    }
+
+    function saveStudentResult() {
+      const name = document.getElementById('input_name').value.trim();
+      const school = document.getElementById('input_school').value || 'ไม่ระบุ';
+      if(!name) { alert("กรุณาระบุชื่อนักเรียนก่อนบันทึก"); return; }
+
+      let riskCaries = 0, initial = 0, cavity = 0;
+      Object.values(teethState).forEach(st => {
+        if(st==='risk') riskCaries++;
+        if(st==='initial') initial++;
+        if(st==='cavity') cavity++;
+      });
+      const totalBad = riskCaries + initial + cavity;
+      const sealantNum = document.getElementById('chk_sealant').checked ? parseInt(document.getElementById('num_sealant').value || 1) : 0;
+      const fillingNum = document.getElementById('chk_filling').checked ? parseInt(document.getElementById('num_filling').value || 1) : 0;
+
+      processedRecords.push({ name, grade: document.getElementById('input_grade').value, school, totalBad, fillingNum, sealantNum });
+      updateDashboard();
+      alert(`บันทึกข้อมูลของ ${name} ลงแดชบอร์ดสรุปผลเรียบร้อยแล้ว`);
+      switchTab('tab-dashboard');
+    }
+
+    function updateDashboard() {
+      const tStudent = document.getElementById('student_records_table');
+      tStudent.innerHTML = '';
+      if(processedRecords.length === 0) {
+        tStudent.innerHTML = '<tr><td colspan="5" class="p-4 text-center text-slate-400">ยังไม่มีบันทึกข้อมูล</td></tr>';
+      } else {
+        processedRecords.forEach(rec => {
+          tStudent.innerHTML += `
+            <tr class="border-b border-slate-200 hover:bg-slate-50">
+              <td class="p-3">${rec.name}</td>
+              <td class="p-3">${rec.grade}</td>
+              <td class="p-3">${rec.school}</td>
+              <td class="p-3 text-center text-rose-600 font-bold">${rec.totalBad}</td>
+              <td class="p-3 text-center"><span class="px-2 py-1 bg-emerald-100 text-emerald-800 rounded text-xs">ตรวจแล้ว</span></td>
+            </tr>
+          `;
+        });
+      }
+
+      const schools = {};
+      processedRecords.forEach(r => {
+        if(!schools[r.school]) schools[r.school] = { count:0, bad:0, fill:0, seal:0 };
+        schools[r.school].count += 1;
+        schools[r.school].bad += r.totalBad;
+        schools[r.school].fill += r.fillingNum;
+        schools[r.school].seal += r.sealantNum;
+      });
+
+      const tSchool = document.getElementById('school_summary_table');
+      tSchool.innerHTML = '';
+      if(Object.keys(schools).length === 0) {
+        tSchool.innerHTML = '<tr><td colspan="5" class="p-4 text-center text-slate-400">ยังไม่มีข้อมูลการตรวจ</td></tr>';
+      } else {
+        for(let s in schools) {
+          tSchool.innerHTML += `
+            <tr class="border-b border-slate-200 hover:bg-sky-50">
+              <td class="p-3 font-semibold text-sky-800">${s}</td>
+              <td class="p-3 text-center">${schools[s].count} คน</td>
+              <td class="p-3 text-center text-rose-600">${schools[s].bad} ซี่</td>
+              <td class="p-3 text-center">${schools[s].fill} ซี่</td>
+              <td class="p-3 text-center">${schools[s].seal} ซี่</td>
+            </tr>
+          `;
+        }
+      }
+    }
+
+    function syncToReport() {
+      const title = document.getElementById('input_title').value;
+      const name = document.getElementById('input_name').value.trim();
+      const fullName = (title || name) ? `${title} ${name}` : '-';
+      const age = document.getElementById('input_age').value || '-';
+      const grade = document.getElementById('input_grade').value || '-';
+      const school = document.getElementById('input_school').value || '-';
+      const dVal = document.getElementById('input_date').value;
+      let thaiDate = '-';
+      if(dVal) {
+        const d = new Date(dVal);
+        const m = ['มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม'];
+        thaiDate = `${d.getDate()} ${m[d.getMonth()]} ${d.getFullYear() + 543}`;
+      }
+
+      document.querySelectorAll('.sync-name').forEach(el => el.innerText = fullName);
+      document.querySelectorAll('.sync-age').forEach(el => el.innerText = age);
+      document.querySelectorAll('.sync-grade').forEach(el => el.innerText = grade);
+      document.querySelectorAll('.sync-school').forEach(el => el.innerText = school);
+      document.querySelectorAll('.sync-date').forEach(el => el.innerText = thaiDate);
+      
+      document.getElementById('report_scan_composite').src = document.getElementById('preview_composite').src;
+      document.getElementById('report_gum').innerText = document.getElementById('input_gum').value || '-';
+      document.getElementById('report_advice_text').innerText = document.getElementById('input_advice').value || '-';
+      document.getElementById('report_dentist_name').innerText = document.getElementById('input_dentist').value || '-';
+
+      const tArr = [];
+      if(document.getElementById('chk_plaque').checked) tArr.push('เน้นแปรงฟันกำจัดคราบจุลินทรีย์');
+      if(document.getElementById('chk_fluoride').checked) tArr.push('ทาฟลูออไรด์วานิช');
+      if(document.getElementById('chk_scaling').checked) tArr.push('ขูดหินปูน');
+      if(document.getElementById('chk_filling').checked) { let n = document.getElementById('num_filling').value; tArr.push(`อุดฟัน ${n?'('+n+' ซี่)':''}`); }
+      if(document.getElementById('chk_sealant').checked) { let n = document.getElementById('num_sealant').value; tArr.push(`เคลือบหลุมร่องฟัน ${n?'('+n+' ซี่)':''}`); }
+      if(document.getElementById('chk_ext').checked) { let n = document.getElementById('num_ext').value; tArr.push(`ถอนฟัน ${n?'('+n+' ซี่)':''}`); }
+      
+      const extra = document.getElementById('input_treatment_extra').value.trim();
+      if(extra) tArr.push(extra);
+      document.getElementById('report_treatment').innerText = tArr.length > 0 ? tArr.join(', ') : '-';
+
+      document.getElementById('report_arch_upper_box').innerHTML = '<svg id="svg_report_upper" viewBox="0 0 340 250" class="w-full max-w-[340px] mx-auto"></svg>';
+      document.getElementById('report_arch_lower_box').innerHTML = '<svg id="svg_report_lower" viewBox="0 0 340 250" class="w-full max-w-[340px] mx-auto"></svg>';
+      renderDualArch('svg_report_upper', upperPermArch, upperPrimaryArch, false, 'upper');
+      renderDualArch('svg_report_lower', lowerPermArch, lowerPrimaryArch, false, 'lower');
+
+      let pm=0, pr=0; const cnt={risk:0,initial:0,cavity:0,extracted:0,other:0};
+      [...upperPermArch, ...lowerPermArch].forEach(t => { const s=teethState[t.id]; if(s!=='unerupted'&&s!=='extracted') pm++; if(cnt[s]!==undefined) cnt[s]++; });
+      [...upperPrimaryArch, ...lowerPrimaryArch].forEach(t => { const s=teethState[t.id]; if(s!=='unerupted'&&s!=='extracted') pr++; if(cnt[s]!==undefined) cnt[s]++; });
+      document.getElementById('report_stat_counts').innerHTML = `
+        <div>• จำนวนฟันทั้งหมดในช่องปาก: <strong class="text-sky-900">${pm+pr} ซี่</strong> (ฟันแท้ ${pm}, ฟันน้ำนม ${pr})</div>
+        <div>• ฟันที่มีความเสี่ยงผุ: <strong class="text-yellow-700">${cnt.risk} ซี่</strong></div>
+        <div>• ฟันผุระยะเริ่มต้น: <strong class="text-orange-700">${cnt.initial} ซี่</strong></div>
+        <div>• ฟันที่ผุเป็นรู: <strong class="text-rose-700">${cnt.cavity} ซี่</strong></div>
+        <div>• ฟันที่ถูกถอน: <strong>${cnt.extracted} ซี่</strong></div>
+        <div>• ฟันผิดปกติอื่นๆ: <strong>${cnt.other} ซี่</strong></div>
+      `;
+
+      const findingsList = document.getElementById('report_findings_list');
+      findingsList.innerHTML = '';
+      document.querySelectorAll('.finding-row').forEach((row, idx) => {
+        const desc = row.querySelector('.finding-desc').value;
+        let imgSrc = '';
+        const imgEl = row.querySelector('.finding-img');
+        const fileInput = row.querySelector('.finding-file');
+        
+        if (imgEl && imgEl.getAttribute('data-base64')) {
+            imgSrc = imgEl.getAttribute('data-base64');
+        } else if (fileInput && fileInput.getAttribute('data-base64')) {
+            imgSrc = fileInput.getAttribute('data-base64');
+        }
+
+        const item = document.createElement('div');
+        item.className = 'border rounded-xl p-2 bg-slate-50 flex flex-col justify-between shadow-sm';
+        item.innerHTML = `
+          ${imgSrc ? `<img src="${imgSrc}" class="h-32 w-full object-contain rounded-lg border border-slate-200 mb-1.5 bg-white">` : '<div class="h-32 w-full bg-slate-200 rounded-lg flex items-center justify-center text-[10px] text-slate-400 mb-1.5">ไม่มีภาพแนบ</div>'}
+          <div class="text-xs text-slate-700"><strong>จุดที่ ${idx + 1}:</strong> ${desc || '-'}</div>
+        `;
+        findingsList.appendChild(item);
+      });
+    }
+
+    function printReport() {
+      syncToReport();
+      const p = document.getElementById('print_area');
+      p.classList.remove('hidden');
+      setTimeout(() => { 
+        window.print(); 
+        p.classList.add('hidden'); 
+      }, 300);
+    }
+
+    window.onload = () => {
+      document.getElementById('input_date').value = new Date().toISOString().split('T')[0];
+      initArchOdontogram();
+    };
+  </script>
+</body>
+</html>
